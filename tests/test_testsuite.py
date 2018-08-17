@@ -16,7 +16,6 @@ from tests.conftest import run_and_parse, is_sub_dict
 # ======================================================================================================================
 def test_no_env_vars_set(testdir, undecorated_test_function, testsuite_attribs_exp):
     """Verify that pytest accepts our fixture without setting any environment variables."""
-
     # Setup
     testdir.makepyfile(undecorated_test_function.format(test_name='test_pass'))
 

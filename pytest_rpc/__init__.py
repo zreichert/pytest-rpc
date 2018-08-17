@@ -9,6 +9,7 @@ import os
 import pytest
 import pkg_resources
 from datetime import datetime
+from zigzag.zigzag import ZigZag
 
 
 # ======================================================================================================================
@@ -91,18 +92,8 @@ def _get_ci_environment(session):
     Returns:
         str: The value of the config with the highest precedence
     """
-    #  Try to get configs from CLI and ini
-    try:
-        cli_option = session.config.getoption('--ci-environment')
-    except ValueError:
-        cli_option = None
-    try:
-        ini_option = session.config.getini('ci-environment')
-    except ValueError:
-        ini_option = None
-
     # Determine if the option passed with the highest precedence is a valid option
-    highest_precedence = cli_option or ini_option or 'asc'
+    highest_precedence = _get_option_of_highest_precedence(session, 'ci-environment') or 'asc'
     white_list = ['asc', 'mk8s']
     if not any(x == highest_precedence for x in white_list):
         raise RuntimeError(
@@ -111,9 +102,61 @@ def _get_ci_environment(session):
     return highest_precedence
 
 
+def _get_option_of_highest_precedence(session, option_name):
+    """looks in the session and returns the option of the highest precedence
+    This assumes that there are options and flags that are equivalent
+
+    Args:
+        session (_pytest.main.Session): The pytest session object
+        option_name (str): The name of the option
+
+    Returns:
+        str: The value of the option that is of highest precedence
+        None: no value is present
+    """
+    #  Try to get configs from CLI and ini
+    try:
+        cli_option = session.config.getoption("--{}".format(option_name))
+    except ValueError:
+        cli_option = None
+    try:
+        ini_option = session.config.getini(option_name)
+    except ValueError:
+        ini_option = None
+    highest_precedence = cli_option or ini_option
+    return highest_precedence
+
+
 # ======================================================================================================================
 # Functions: Public
 # ======================================================================================================================
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus, terminalreporter):
+    """This hook is used by pytest to build the junit XML
+    Using ZigZag as a library we upload in the pytest runtime
+
+    Args:
+        session (_pytest.main.Session): The pytest session object
+        exitstatus
+    """
+    if session.config.pluginmanager.hasplugin('junitxml'):
+        if _get_option_of_highest_precedence(session, 'zigzag'):
+            qtest_project_id = _get_option_of_highest_precedence(session, 'qtest-project-id')
+            if qtest_project_id:
+                junit_file_path = getattr(session.config, '_xml', None).logfile
+                if junit_file_path:  # extra test to make double sure we have a file path recommended by Ryan
+                    try:
+                        zz = ZigZag(junit_file_path,
+                                    os.environ['QTEST_API_TOKEN'],
+                                    qtest_project_id,
+                                    qtest_test_cycle,
+                                    pprint_on_fail)
+                        zz.upload_test_results()
+                        # we should print the status of our upload attempt
+                    except Exception as e: # we want this super broad so we dont break test execution
+                        pass # TODO print the exception and continue
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtestloop(session):
     """Add XML properties group to the 'testsuite' element that captures the values for specified environment variables.
@@ -126,7 +169,8 @@ def pytest_runtestloop(session):
             junit_xml_config = getattr(session.config, '_xml', None)
 
             if junit_xml_config:
-                ci_environment = _get_ci_environment(session)
+                ci_environment = \
+                    _get_ci_environment(session)
                 junit_xml_config.add_global_property('ci-environment', ci_environment)
                 if ci_environment == 'asc':
                     for env_var in ASC_ENV_VARS:
@@ -178,6 +222,15 @@ def pytest_addoption(parser):
     config_option_help = "The ci-environment used to execute the tests, (default: 'asc')"
     parser.addini(config_option, config_option_help)
     parser.addoption("--{}".format(config_option), help=config_option_help)
+
+    # options related to publishing
+    zigzag_help = 'Tell pytest to automatically publish with ZigZag'
+    parser.addini('zigzag', zigzag_help, type=bool, default=False)
+    parser.addoption('--zigzag', zigzag_help, type=bool, default=False)
+
+    project_help = 'The project ID you would like zigzag to use on upload'
+    parser.addini('qtest-project-id', project_help, type=bool, default=False)
+    parser.addoption('--qtest-project-id', project_help, type=bool, default=False)
 
 
 def get_xsd(ci_environment='asc'):
